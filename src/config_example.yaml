@@ -1,0 +1,50 @@
+# Example configuration file for GNN Ranker
+
+graph:
+  bound_cutoff: 8.0          # Cα-Cα distance for antibody-antigen contacts (Angstroms)
+  unbound_cutoff: 10.0        # Cα-Cα distance for within-chain edges (Angstroms)
+  use_sequential_edges: false # Include (i, i+1) sequential edges
+  include_residue_index: true # Include normalized residue index in node features
+
+model:
+  hidden_dim: 128             # Hidden dimension for GAT layers
+  num_layers: 3               # Number of GAT layers
+  num_heads: 4                # Number of attention heads per layer
+  dropout: 0.1                # Dropout probability
+  use_edge_types: true        # Use edge type information in model
+
+loss:
+  margin_eps: 0.0             # Margin for pairwise comparisons
+  weight_by_diff: true        # Weight loss by |y_i - y_j|
+  reduction: "mean"           # Loss reduction: "mean" or "sum"
+
+training:
+  batch_size: 16              # Batch size
+  num_epochs: 2             # Number of training epochs
+  learning_rate: 0.001        # Learning rate
+  weight_decay: 0.0001        # Weight decay (L2 regularization)
+  optimizer: "adamw"          # Optimizer: "adamw" or "adam"
+  scheduler: "cosine"         # LR scheduler: "cosine", "step", or null
+  scheduler_params:
+    cosine:
+      T_max: 100
+    step:
+      step_size: 30
+      gamma: 0.1
+  val_split: 0.2              # Validation split ratio
+  val_metric: "spearman"      # Validation metric: "spearman" or "pairwise_acc"
+  log_interval: 10            # Log every N epochs
+  save_dir: "checkpoints"     # Directory to save checkpoints
+  save_best: true             # Save best model based on val_metric
+  device: "auto"              # Device: "auto", "cuda", or "cpu"
+  num_workers: 4              # Number of data loader workers
+
+data:
+  manifest_csv: "test_manifest.csv"  # Path to CSV manifest
+  pdb_dir: null               # Optional base directory for PDB paths (ignored if pdb_path in CSV is absolute)
+  default_antibody_chains:    # Default antibody chains if not in CSV
+    - "H"
+    - "L"
+  default_antigen_chains: null # Default antigen chains (null = infer from remaining)
+  transforms: []              # List of transforms to apply
+
