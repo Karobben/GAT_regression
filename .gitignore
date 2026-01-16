@@ -1,2 +1,3 @@
 src/cache
 .cursor/debug.log
+cache/ checkpoints/
