@@ -1,0 +1,41 @@
+{
+  "pdb_path": "/raid/home/wenkanl2/Ken/HA_DB/data/raw/5K9K_SRR747232_167571.pdb",
+  "config": {
+    "pdb_path": "/raid/home/wenkanl2/Ken/HA_DB/data/raw/5K9K_SRR747232_167571.pdb",
+    "antibody_chains": [
+      "H",
+      "L"
+    ],
+    "antigen_chains": [
+      "A"
+    ],
+    "noncovalent_cutoff": 10.0,
+    "interface_cutoff": 8.0,
+    "use_covalent_edges": true,
+    "use_noncovalent_edges": true,
+    "allow_duplicate_edges": false,
+    "include_residue_index": true,
+    "add_interface_features_to_x": true
+  },
+  "created": "2026-01-15T19:37:40.677453",
+  "num_nodes": 733,
+  "num_edges": 12832,
+  "edge_type_counts": {
+    "0": 1460,
+    "1": 11372
+  },
+  "chain_mapping": {
+    "0": {
+      "label": "A",
+      "role": 1
+    },
+    "1": {
+      "label": "H",
+      "role": 0
+    },
+    "2": {
+      "label": "L",
+      "role": 0
+    }
+  }
+}

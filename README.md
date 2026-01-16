@@ -14,10 +14,14 @@ This project implements a Graph Attention Network (GAT) that:
 
 - **Graph Construction**: C-alpha atoms only, with configurable distance cutoffs
 - **Edge Types**: 
-  - BOUND edges: Cross-interface contacts (antibody ↔ antigen) within 8.0 Å
-  - UNBOUND edges: Within-chain spatial proximity within 10.0 Å
-  - Optional sequential edges (i, i+1) within chains
-- **Node Features**: Residue type (20 AA one-hot), chain type (antibody/antigen), optional residue index
+  - **COVALENT edges (type 0)**: Peptide backbone connectivity connecting sequential residues within each chain, determined by sorting residues by (resseq, insertion_code) from PDB
+  - **NONCOVALENT edges (type 1)**: Distance-based contacts between all residue pairs within cutoff (default 10.0 Å), excluding covalent pairs to avoid duplication
+- **Interface Markers**: Geometry-based node-level markers computed from proximity between antibody and antigen nodes:
+  - `min_inter_dist`: Minimum Cα distance to any node on the opposite molecule
+  - `inter_contact_count`: Number of opposite-molecule nodes within interface cutoff (default 8.0 Å)
+  - `is_interface`: Binary marker (1 if has contacts, 0 otherwise)
+  - Optionally added to node features for model input
+- **Node Features**: Residue type (21-dim one-hot: 20 AAs + unknown), chain type (antibody/antigen), optional residue index, optional interface features
 - **Model**: GAT with 4 attention heads, edge-type aware message passing
 - **Loss**: Pairwise ranking loss with configurable margin and weighting
 
@@ -41,31 +45,51 @@ conda activate gnn-ranker
 pip install torch torch-geometric biopython numpy pandas scipy pyyaml tqdm
 ```
 
-Or install from requirements file (if provided):
+Or install from requirements file:
 ```bash
 pip install -r requirements.txt
 ```
 
+This includes all dependencies including Streamlit and Plotly for the web dashboard.
+
 ## Project Structure
 
 ```
-GNNBind/
+GAT_regression/
+├── train.py                      # Training script (entrypoint)
+├── eval.py                       # Evaluation script (entrypoint)
 ├── src/
 │   ├── data/
-│   │   ├── pdb_to_graph.py      # PDB → PyTorch Geometric Data
-│   │   ├── dataset.py            # Dataset class for CSV manifest
-│   │   └── transforms.py         # Data augmentation transforms
+│   │   ├── pdb_to_graph.py       # PDB → PyTorch Geometric Data (with visualization fields)
+│   │   ├── dataset.py             # Dataset class for CSV manifest
+│   │   ├── cache_utils.py         # Graph caching utilities
+│   │   └── transforms.py          # Data augmentation transforms
 │   ├── models/
-│   │   └── gat_ranker.py         # GAT model for ranking
+│   │   └── gat_ranker.py          # GAT model for ranking
 │   ├── losses/
-│   │   └── pairwise_rank_loss.py # Pairwise ranking loss
-│   ├── config.py                 # Configuration dataclasses
-│   ├── train.py                  # Training script
-│   ├── eval.py                   # Evaluation script
-│   └── utils.py                  # Utility functions
+│   │   ├── pairwise_rank_loss.py  # Pairwise ranking loss
+│   │   └── regression_losses.py   # Regression losses (MSE, L1, etc.)
+│   ├── utils/
+│   │   └── run_logging.py         # Run logging utilities
+│   ├── webapp/
+│   │   ├── app.py                 # Streamlit dashboard (main entry)
+│   │   └── utils.py               # Webapp helper functions
+│   ├── config.py                  # Configuration dataclasses
+│   └── utils.py                   # Utility functions
+├── runs/                          # Training run artifacts (created during training)
+│   └── YYYYMMDD_HHMMSS_<hash>/    # Individual run directories
+│       ├── config.yaml            # Training configuration
+│       ├── metrics_train.csv       # Training metrics per epoch
+│       ├── metrics_val.csv         # Validation metrics per epoch
+│       ├── eval_predictions.csv   # Evaluation predictions (after eval.py)
+│       └── cache_link.txt          # Link to graph cache directory
+├── cache/
+│   └── graphs/                    # Cached preprocessed graphs
+├── checkpoints/                   # Model checkpoints (best model, epoch checkpoints)
 ├── tests/
-│   ├── test_pdb_to_graph.py      # Tests for graph construction
-│   └── test_loss.py              # Tests for ranking loss
+│   ├── test_pdb_to_graph.py       # Tests for graph construction
+│   ├── test_loss.py               # Tests for ranking loss
+│   └── test_graph_fields.py       # Tests for visualization fields
 └── README.md
 ```
 
@@ -109,30 +133,29 @@ For multiple antigen chains: `antigen_chains` = `"A,B"` (quoted) or `A` (single 
 
 Basic training with default configuration (using absolute paths in manifest):
 ```bash
-cd src
-python train.py --manifest ../data/manifest.csv
+python train.py --manifest data/manifest.csv
 ```
 
 If using relative paths in manifest, specify the base directory:
 ```bash
-python train.py --manifest ../data/manifest.csv --pdb-dir ../data/pdbs/
+python train.py --manifest data/manifest.csv --pdb-dir data/pdbs/
 ```
 
 With custom configuration:
 ```bash
-python train.py --config config.yaml --manifest ../data/manifest.csv
+python train.py --config config.yaml --manifest data/manifest.csv
 ```
 
 Override specific settings from command line:
 ```bash
 # Override number of epochs
-python train.py --config config.yaml --manifest ../data/manifest.csv --epoch 200
+python train.py --config config.yaml --manifest data/manifest.csv --epoch 200
 
 # Override loss function
-python train.py --config config.yaml --manifest ../data/manifest.csv --loss mse
+python train.py --config config.yaml --manifest data/manifest.csv --loss mse
 
 # Override both
-python train.py --config config.yaml --manifest ../data/manifest.csv --epoch 50 --loss l1
+python train.py --config config.yaml --manifest data/manifest.csv --epoch 50 --loss l1
 ```
 
 Synthetic dataset for testing (no PDB files needed):
@@ -144,12 +167,12 @@ python train.py --synthetic
 
 Evaluate a trained model (using absolute paths in manifest):
 ```bash
-python eval.py --model checkpoints/best_model.pt --manifest ../data/test_manifest.csv
+python eval.py --model checkpoints/best_model.pt --manifest data/test_manifest.csv
 ```
 
 If using relative paths in manifest, specify the base directory:
 ```bash
-python eval.py --model checkpoints/best_model.pt --manifest ../data/test_manifest.csv --pdb-dir ../data/pdbs/
+python eval.py --model checkpoints/best_model.pt --manifest data/test_manifest.csv --pdb-dir data/pdbs/
 ```
 
 ### Configuration

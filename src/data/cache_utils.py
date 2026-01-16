@@ -17,10 +17,13 @@ class PreprocessConfig:
     pdb_path: str
     antibody_chains: list
     antigen_chains: list
-    bound_cutoff: float
-    unbound_cutoff: float
-    use_sequential_edges: bool
+    noncovalent_cutoff: float
+    interface_cutoff: float
+    use_covalent_edges: bool
+    use_noncovalent_edges: bool
+    allow_duplicate_edges: bool
     include_residue_index: bool
+    add_interface_features_to_x: bool
     
     def to_dict(self) -> dict:
         """Convert to dictionary for hashing."""
@@ -28,10 +31,13 @@ class PreprocessConfig:
             "pdb_path": str(self.pdb_path),
             "antibody_chains": sorted(self.antibody_chains) if self.antibody_chains else None,
             "antigen_chains": sorted(self.antigen_chains) if self.antigen_chains else None,
-            "bound_cutoff": float(self.bound_cutoff),
-            "unbound_cutoff": float(self.unbound_cutoff),
-            "use_sequential_edges": bool(self.use_sequential_edges),
+            "noncovalent_cutoff": float(self.noncovalent_cutoff),
+            "interface_cutoff": float(self.interface_cutoff),
+            "use_covalent_edges": bool(self.use_covalent_edges),
+            "use_noncovalent_edges": bool(self.use_noncovalent_edges),
+            "allow_duplicate_edges": bool(self.allow_duplicate_edges),
             "include_residue_index": bool(self.include_residue_index),
+            "add_interface_features_to_x": bool(self.add_interface_features_to_x),
         }
 
 

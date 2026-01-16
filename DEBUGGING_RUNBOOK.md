@@ -7,7 +7,6 @@ This document provides a step-by-step guide to debug and fix model collapse issu
 
 ### Command
 ```bash
-cd src
 python train.py --manifest manifest.csv --overfit-n 32
 ```
 
@@ -224,8 +223,8 @@ loss:
 ## Files Modified
 
 1. `src/losses/pairwise_rank_loss.py` - Robust loss implementation
-2. `src/train.py` - Overfit mode, debug logging, gradient clipping
-3. `src/eval.py` - Enhanced metrics reporting
+2. `train.py` - Overfit mode, debug logging, gradient clipping
+3. `eval.py` - Enhanced metrics reporting
 4. `src/data/dataset.py` - Data validation assertions
 5. `src/models/gat_ranker.py` - LayerNorm in score head
 6. `src/config.py` - New config options (grad_clip, overfit_n, etc.)

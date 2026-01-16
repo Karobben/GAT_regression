@@ -11,12 +11,17 @@ from pathlib import Path
 class GraphConfig:
     """Configuration for graph construction."""
     # Distance cutoffs (Angstroms)
-    bound_cutoff: float = 8.0  # Cα-Cα distance for antibody-antigen contacts
-    unbound_cutoff: float = 10.0  # Cα-Cα distance for within-chain edges
-    use_sequential_edges: bool = False  # Whether to include (i, i+1) sequential edges
+    noncovalent_cutoff: float = 10.0  # Cα-Cα distance for noncovalent edges
+    interface_cutoff: float = 8.0  # Cα-Cα distance for interface definition
+    
+    # Edge construction
+    use_covalent_edges: bool = True  # Whether to include covalent (peptide backbone) edges
+    use_noncovalent_edges: bool = True  # Whether to include noncovalent (distance-based) edges
+    allow_duplicate_edges: bool = False  # If False, exclude covalent pairs from noncovalent edges
     
     # Node features
     include_residue_index: bool = True  # Include normalized residue index as feature
+    add_interface_features_to_x: bool = True  # Add interface markers to node features
 
 
 @dataclass
@@ -27,10 +32,15 @@ class ModelConfig:
     num_heads: int = 4  # Number of attention heads
     dropout: float = 0.1
     use_edge_types: bool = True  # Whether to use edge type information in model
-    
+    num_edge_types: int = 2  # COVALENT (0) and NONCOVALENT (1)
+
+    # New relational GAT parameters
+    use_residual: bool = True  # Use residual connections
+    combine_edge_types: str = "sum"  # "sum" or "concat" for combining edge type messages
+    interface_pool_mode: str = "all"  # "all" (pool all interface nodes) or "split_roles" (separate antibody/antigen interface pooling)
+
     # Input feature dimensions (will be set automatically)
-    node_feature_dim: int = 22  # 20 AA types + 1 chain type + 1 optional residue index
-    num_edge_types: int = 2  # BOUND and UNBOUND (or 3 if sequential edges enabled)
+    node_feature_dim: int = 24  # 21 AA types + 1 chain type + 1 optional residue index + 2 optional interface features
 
 
 @dataclass
@@ -73,6 +83,7 @@ class TrainingConfig:
     log_interval: int = 10
     save_dir: str = "checkpoints"
     save_best: bool = True
+    save_all_epochs: bool = False  # If True, save model checkpoint at end of each epoch
     
     # Device
     device: str = "auto"  # "auto", "cuda", or "cpu"
@@ -84,6 +95,9 @@ class TrainingConfig:
     
     # Overfit sanity test
     overfit_n: int = 0  # If >0, train only on first N samples (no val split)
+    
+    # Graph preloading
+    preload_workers: int = None  # Number of workers for parallel graph preloading (None = auto, 0 = sequential)
 
 
 @dataclass

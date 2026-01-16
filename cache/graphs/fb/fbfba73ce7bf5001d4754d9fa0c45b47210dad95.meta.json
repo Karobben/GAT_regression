@@ -1,0 +1,46 @@
+{
+  "pdb_path": "/raid/home/wenkanl2/Ken/HA_DB/data/homology/7KC1_SRR2899884_39218_6NZ7_homology.pdb",
+  "config": {
+    "pdb_path": "/raid/home/wenkanl2/Ken/HA_DB/data/homology/7KC1_SRR2899884_39218_6NZ7_homology.pdb",
+    "antibody_chains": [
+      "H",
+      "L"
+    ],
+    "antigen_chains": [
+      "A",
+      "B"
+    ],
+    "noncovalent_cutoff": 10.0,
+    "interface_cutoff": 8.0,
+    "use_covalent_edges": true,
+    "use_noncovalent_edges": true,
+    "allow_duplicate_edges": false,
+    "include_residue_index": true,
+    "add_interface_features_to_x": true
+  },
+  "created": "2026-01-15T19:37:45.466270",
+  "num_nodes": 708,
+  "num_edges": 12398,
+  "edge_type_counts": {
+    "0": 1408,
+    "1": 10990
+  },
+  "chain_mapping": {
+    "0": {
+      "label": "A",
+      "role": 1
+    },
+    "1": {
+      "label": "B",
+      "role": 1
+    },
+    "2": {
+      "label": "H",
+      "role": 0
+    },
+    "3": {
+      "label": "L",
+      "role": 0
+    }
+  }
+}

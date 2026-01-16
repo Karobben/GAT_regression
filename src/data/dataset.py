@@ -23,6 +23,135 @@ from .cache_utils import (
 )
 
 
+def _preload_worker(args):
+    """
+    Worker function for parallel graph preloading.
+    
+    Args:
+        args: Tuple of (idx, pdb_path, y, antibody_chains, antigen_chains, ...)
+    
+    Returns:
+        (success, was_cache_hit, build_time) tuple
+    """
+    import time
+    from pathlib import Path
+    from .pdb_to_graph import pdb_to_graph
+    from .cache_utils import (
+        PreprocessConfig, make_cache_key, get_cache_path,
+        save_graph_to_cache, verify_cache_metadata
+    )
+    from Bio.PDB import PDBParser
+    import warnings
+    from datetime import datetime
+    
+    (idx, pdb_path, y, antibody_chains, antigen_chains,
+     noncovalent_cutoff, interface_cutoff, use_covalent_edges,
+     use_noncovalent_edges, allow_duplicate_edges, include_residue_index,
+     add_interface_features_to_x, cache_dir, hash_pdb_contents, rebuild_cache) = args
+    
+    pdb_path = Path(pdb_path)
+    cache_dir = Path(cache_dir)
+    was_cache_hit = False
+    build_time = 0.0
+    
+    try:
+        # Infer antigen chains if needed
+        if antigen_chains is None:
+            parser = PDBParser(QUIET=True)
+            try:
+                structure = parser.get_structure("complex", str(pdb_path))
+                all_chain_ids = [chain.id for chain in structure[0].get_chains()]
+                antigen_chains = [cid for cid in all_chain_ids if cid not in antibody_chains]
+                if not antigen_chains:
+                    antigen_chains = all_chain_ids[len(antibody_chains):] if len(all_chain_ids) > len(antibody_chains) else []
+            except Exception:
+                antigen_chains = []
+        
+        # Create preprocessing config
+        preprocess_config = PreprocessConfig(
+            pdb_path=str(pdb_path),
+            antibody_chains=antibody_chains,
+            antigen_chains=antigen_chains,
+            noncovalent_cutoff=noncovalent_cutoff,
+            interface_cutoff=interface_cutoff,
+            use_covalent_edges=use_covalent_edges,
+            use_noncovalent_edges=use_noncovalent_edges,
+            allow_duplicate_edges=allow_duplicate_edges,
+            include_residue_index=include_residue_index,
+            add_interface_features_to_x=add_interface_features_to_x
+        )
+        
+        # Generate cache key
+        cache_key = make_cache_key(str(pdb_path), preprocess_config, hash_pdb_contents)
+        cache_path = get_cache_path(cache_dir, cache_key)
+        
+        # Try to load from cache
+        if not rebuild_cache and cache_path.exists():
+            try:
+                if verify_cache_metadata(cache_path, preprocess_config):
+                    was_cache_hit = True
+                    return (True, was_cache_hit, build_time)
+            except Exception:
+                pass  # Cache invalid, rebuild
+        
+        # Build graph from PDB
+        build_start = time.time()
+        data = pdb_to_graph(
+            pdb_path=str(pdb_path),
+            antibody_chains=antibody_chains,
+            antigen_chains=antigen_chains,
+            noncovalent_cutoff=noncovalent_cutoff,
+            interface_cutoff=interface_cutoff,
+            use_covalent_edges=use_covalent_edges,
+            use_noncovalent_edges=use_noncovalent_edges,
+            allow_duplicate_edges=allow_duplicate_edges,
+            include_residue_index=include_residue_index,
+            add_interface_features_to_x=add_interface_features_to_x,
+            y=y
+        )
+        build_time = time.time() - build_start
+        
+        # Save to cache
+        try:
+            # Count edge types for metadata
+            if hasattr(data, 'edge_type') and data.edge_type is not None:
+                edge_types = data.edge_type.unique().int().tolist()
+                edge_type_counts = {int(et): int((data.edge_type == et).sum()) for et in edge_types}
+            else:
+                edge_type_counts = {}
+            
+            # Build chain mapping
+            chain_mapping = {}
+            if hasattr(data, 'chain_labels') and data.chain_labels is not None:
+                chain_labels = data.chain_labels if isinstance(data.chain_labels, list) else data.chain_labels.tolist()
+                for chain_idx, chain_label in enumerate(chain_labels):
+                    role = 0 if chain_label in antibody_chains else 1
+                    chain_mapping[str(chain_idx)] = {
+                        "label": chain_label,
+                        "role": role
+                    }
+            
+            metadata = {
+                "pdb_path": str(pdb_path),
+                "config": preprocess_config.to_dict(),
+                "created": datetime.now().isoformat(),
+                "num_nodes": int(data.num_nodes),
+                "num_edges": int(data.edge_index.shape[1]),
+                "edge_type_counts": edge_type_counts,
+                "chain_mapping": chain_mapping
+            }
+            
+            save_graph_to_cache(data, cache_path, metadata)
+        except Exception as e:
+            warnings.warn(f"Failed to save cache for {pdb_path}: {e}")
+        
+        return (True, was_cache_hit, build_time)
+        
+    except Exception as e:
+        warnings.warn(f"Error processing {pdb_path}: {e}")
+        return (False, was_cache_hit, build_time)
+
+
 class CachedGraphDataset(Dataset):
     """
     Dataset for antibody-antigen complexes with disk caching.
@@ -40,10 +169,13 @@ class CachedGraphDataset(Dataset):
         pdb_dir: Optional[str] = None,
         default_antibody_chains: List[str] = None,
         default_antigen_chains: Optional[List[str]] = None,
-        bound_cutoff: float = 8.0,
-        unbound_cutoff: float = 10.0,
-        use_sequential_edges: bool = False,
+        noncovalent_cutoff: float = 10.0,
+        interface_cutoff: float = 8.0,
+        use_covalent_edges: bool = True,
+        use_noncovalent_edges: bool = True,
+        allow_duplicate_edges: bool = False,
         include_residue_index: bool = True,
+        add_interface_features_to_x: bool = True,
         transform: Optional[Callable] = None,
         graph_cache_dir: str = "cache/graphs",
         hash_pdb_contents: bool = False,
@@ -59,10 +191,13 @@ class CachedGraphDataset(Dataset):
                      If pdb_path is absolute, this parameter is ignored.
             default_antibody_chains: Default antibody chains if not in CSV (default: ["H", "L"])
             default_antigen_chains: Default antigen chains if not in CSV (default: None, infer from remaining)
-            bound_cutoff: Distance cutoff for BOUND edges
-            unbound_cutoff: Distance cutoff for UNBOUND edges
-            use_sequential_edges: Whether to include sequential edges
+            noncovalent_cutoff: Distance cutoff for NONCOVALENT edges (Angstroms)
+            interface_cutoff: Distance cutoff for interface definition (Angstroms)
+            use_covalent_edges: Whether to include covalent edges
+            use_noncovalent_edges: Whether to include noncovalent edges
+            allow_duplicate_edges: If False, exclude covalent pairs from noncovalent edges
             include_residue_index: Whether to include residue index in node features
+            add_interface_features_to_x: Whether to add interface features to node features
             transform: Optional transform to apply to graphs
             graph_cache_dir: Directory to cache preprocessed graphs
             hash_pdb_contents: If True, hash file contents; else use mtime+size
@@ -73,10 +208,13 @@ class CachedGraphDataset(Dataset):
         self.pdb_dir = Path(pdb_dir) if pdb_dir else None
         self.default_antibody_chains = default_antibody_chains or ["H", "L"]
         self.default_antigen_chains = default_antigen_chains
-        self.bound_cutoff = bound_cutoff
-        self.unbound_cutoff = unbound_cutoff
-        self.use_sequential_edges = use_sequential_edges
+        self.noncovalent_cutoff = noncovalent_cutoff
+        self.interface_cutoff = interface_cutoff
+        self.use_covalent_edges = use_covalent_edges
+        self.use_noncovalent_edges = use_noncovalent_edges
+        self.allow_duplicate_edges = allow_duplicate_edges
         self.include_residue_index = include_residue_index
+        self.add_interface_features_to_x = add_interface_features_to_x
         self.transform = transform if transform else IdentityTransform()
         self.hash_pdb_contents = hash_pdb_contents
         self.rebuild_cache = rebuild_cache
@@ -146,7 +284,7 @@ class CachedGraphDataset(Dataset):
     def __len__(self) -> int:
         return len(self.df)
     
-    def preload_all(self, verbose: bool = True):
+    def preload_all(self, verbose: bool = True, num_workers: int = 0):
         """
         Preload all graphs (builds cache if needed).
         
@@ -156,20 +294,95 @@ class CachedGraphDataset(Dataset):
         
         Args:
             verbose: Whether to print progress
+            num_workers: Number of parallel workers (0 = sequential, >0 = multiprocessing, None = auto)
         """
         if verbose:
             print(f"Preloading {len(self)} graphs (will use cache if available)...")
         
-        try:
-            from tqdm import tqdm
-            for idx in tqdm(range(len(self)), disable=not verbose, desc="Loading graphs"):
-                _ = self[idx]  # This will use cache or build it
-        except ImportError:
-            # tqdm not available, use simple loop
+        # Use multiprocessing if requested
+        if num_workers is None or (num_workers > 0 and len(self) > 1):
+            import multiprocessing as mp
+            if num_workers is None:
+                num_workers = mp.cpu_count()
+            
+            if verbose:
+                print(f"Using {num_workers} workers for parallel processing...")
+            
+            # Prepare worker arguments
+            worker_args = []
             for idx in range(len(self)):
-                if verbose and idx % 10 == 0:
-                    print(f"Loading graph {idx}/{len(self)}...")
-                _ = self[idx]
+                row = self.df.iloc[idx]
+                pdb_path = Path(row["pdb_path"])
+                if pdb_path.is_absolute():
+                    pass
+                elif self.pdb_dir:
+                    pdb_path = self.pdb_dir / pdb_path
+                else:
+                    if not pdb_path.exists():
+                        manifest_dir = self.manifest_csv.parent
+                        potential_path = manifest_dir / pdb_path
+                        if potential_path.exists():
+                            pdb_path = potential_path
+                pdb_path = pdb_path.resolve()
+                
+                antibody_chains = self.antibody_chains_list[idx]
+                antigen_chains = self.antigen_chains_list[idx]
+                
+                worker_args.append((
+                    idx,
+                    str(pdb_path),
+                    row["y"],
+                    antibody_chains,
+                    antigen_chains,
+                    self.noncovalent_cutoff,
+                    self.interface_cutoff,
+                    self.use_covalent_edges,
+                    self.use_noncovalent_edges,
+                    self.allow_duplicate_edges,
+                    self.include_residue_index,
+                    self.add_interface_features_to_x,
+                    str(self.cache_dir),
+                    self.hash_pdb_contents,
+                    self.rebuild_cache
+                ))
+            
+            # Process in parallel
+            try:
+                from tqdm import tqdm
+                with mp.Pool(num_workers) as pool:
+                    results = list(tqdm(
+                        pool.imap(_preload_worker, worker_args),
+                        total=len(worker_args),
+                        disable=not verbose,
+                        desc="Loading graphs"
+                    ))
+                
+                # Update cache stats from results
+                for success, was_cache_hit, build_time in results:
+                    if was_cache_hit:
+                        self._cache_hits += 1
+                    else:
+                        self._cache_misses += 1
+                    if build_time > 0:
+                        self._build_times.append(build_time)
+            except Exception as e:
+                if verbose:
+                    print(f"Warning: Multiprocessing failed ({e}), falling back to sequential...")
+                # Fall back to sequential
+                num_workers = 0
+        
+        # Sequential processing
+        if num_workers == 0:
+            try:
+                from tqdm import tqdm
+                for idx in tqdm(range(len(self)), disable=not verbose, desc="Loading graphs"):
+                    _ = self[idx]  # This will use cache or build it
+            except ImportError:
+                # tqdm not available, use simple loop
+                for idx in range(len(self)):
+                    if verbose and idx % 10 == 0:
+                        print(f"Loading graph {idx}/{len(self)}...")
+                    _ = self[idx]
         
         if verbose:
             self.print_cache_stats()
@@ -253,10 +466,13 @@ class CachedGraphDataset(Dataset):
             pdb_path=str(pdb_path),
             antibody_chains=antibody_chains,
             antigen_chains=antigen_chains,
-            bound_cutoff=self.bound_cutoff,
-            unbound_cutoff=self.unbound_cutoff,
-            use_sequential_edges=self.use_sequential_edges,
-            include_residue_index=self.include_residue_index
+            noncovalent_cutoff=self.noncovalent_cutoff,
+            interface_cutoff=self.interface_cutoff,
+            use_covalent_edges=self.use_covalent_edges,
+            use_noncovalent_edges=self.use_noncovalent_edges,
+            allow_duplicate_edges=self.allow_duplicate_edges,
+            include_residue_index=self.include_residue_index,
+            add_interface_features_to_x=self.add_interface_features_to_x
         )
         
         # Generate cache key
@@ -264,6 +480,36 @@ class CachedGraphDataset(Dataset):
         cache_path = get_cache_path(self.cache_dir, cache_key)
         
         # Try to load from cache
+        # #region agent log
+        import json
+        import time
+        from pathlib import Path as PathLib
+        log_path = PathLib("/home/wenkanl2/Ken/GAT_regression/.cursor/debug.log")
+        def log_debug(location, message, data, hypothesis_id=None):
+            entry = {
+                "sessionId": "debug-session",
+                "runId": "pre-fix",
+                "location": location,
+                "message": message,
+                "data": data,
+                "timestamp": int(time.time() * 1000)
+            }
+            try:
+                with open(log_path, "a") as f:
+                    f.write(json.dumps(entry) + "\n")
+            except:
+                pass  # Ignore logging errors
+
+        log_debug("dataset.py:__getitem__", "Processing sample", {
+            "idx": idx,
+            "pdb_path": str(pdb_path),
+            "antibody_chains": antibody_chains,
+            "antigen_chains": antigen_chains,
+            "cache_path": str(cache_path),
+            "cache_exists": cache_path.exists()
+        }, "D")
+        # #endregion agent log
+
         if not self.rebuild_cache and cache_path.exists():
             try:
                 # Verify cache metadata matches config
@@ -289,17 +535,47 @@ class CachedGraphDataset(Dataset):
         build_start = time.time()
         
         try:
+            # #region agent log
+            log_debug("dataset.py:__getitem__", "Before pdb_to_graph call", {
+                "idx": idx,
+                "pdb_path": str(pdb_path),
+                "antibody_chains": antibody_chains,
+                "antigen_chains": antigen_chains
+            }, "B")
+            # #endregion agent log
+
             data = pdb_to_graph(
                 pdb_path=str(pdb_path),
                 antibody_chains=antibody_chains,
                 antigen_chains=antigen_chains,
-                bound_cutoff=self.bound_cutoff,
-                unbound_cutoff=self.unbound_cutoff,
-                use_sequential_edges=self.use_sequential_edges,
+                noncovalent_cutoff=self.noncovalent_cutoff,
+                interface_cutoff=self.interface_cutoff,
+                use_covalent_edges=self.use_covalent_edges,
+                use_noncovalent_edges=self.use_noncovalent_edges,
+                allow_duplicate_edges=self.allow_duplicate_edges,
                 include_residue_index=self.include_residue_index,
+                add_interface_features_to_x=self.add_interface_features_to_x,
                 y=y
             )
+
+            # #region agent log
+            log_debug("dataset.py:__getitem__", "pdb_to_graph call succeeded", {
+                "idx": idx,
+                "pdb_path": str(pdb_path),
+                "num_nodes": int(data.num_nodes),
+                "num_edges": int(data.edge_index.shape[1])
+            }, "B")
+            # #endregion agent log
+
         except Exception as e:
+            # #region agent log
+            log_debug("dataset.py:__getitem__", "pdb_to_graph call failed", {
+                "idx": idx,
+                "pdb_path": str(pdb_path),
+                "error_type": str(type(e).__name__),
+                "error_message": str(e)
+            }, "B")
+            # #endregion agent log
             raise RuntimeError(f"Error processing {pdb_path}: {e}")
         
         build_time = time.time() - build_start
@@ -317,12 +593,42 @@ class CachedGraphDataset(Dataset):
         
         # Save to cache (atomic write)
         try:
-            # Count edge types for metadata
-            if data.edge_attr is not None and data.edge_attr.shape[1] > 0:
+            # Count edge types for metadata (use edge_type if available, else edge_attr)
+            if hasattr(data, 'edge_type') and data.edge_type is not None:
+                edge_types = data.edge_type.unique().int().tolist()
+                edge_type_counts = {int(et): int((data.edge_type == et).sum()) for et in edge_types}
+            elif data.edge_attr is not None and data.edge_attr.shape[1] > 0:
                 edge_types = data.edge_attr[:, 0].unique().int().tolist()
                 edge_type_counts = {int(et): int((data.edge_attr[:, 0] == et).sum()) for et in edge_types}
             else:
                 edge_type_counts = {}
+            
+            # Build chain mapping for metadata (use string keys for JSON compatibility)
+            chain_mapping = {}
+            if hasattr(data, 'chain_labels') and data.chain_labels is not None:
+                chain_labels = data.chain_labels if isinstance(data.chain_labels, list) else data.chain_labels.tolist()
+                for chain_idx, chain_label in enumerate(chain_labels):
+                    # Determine role (0=antibody, 1=antigen)
+                    role = 0 if chain_label in antibody_chains else 1
+                    chain_mapping[str(chain_idx)] = {  # String key for JSON
+                        "label": chain_label,
+                        "role": role
+                    }
+            else:
+                # Fallback: infer from chain_id and chain_group if available
+                if hasattr(data, 'chain_id') and hasattr(data, 'chain_group'):
+                    unique_chain_ids = data.chain_id.unique().int().tolist()
+                    for chain_idx in unique_chain_ids:
+                        # Get role from first node with this chain_id
+                        node_mask = data.chain_id == chain_idx
+                        if node_mask.any():
+                            role = int(data.chain_group[node_mask][0].item())
+                            # Try to get label from config or use index
+                            chain_label = f"Chain{chain_idx}"
+                            chain_mapping[str(chain_idx)] = {
+                                "label": chain_label,
+                                "role": role
+                            }
             
             metadata = {
                 "pdb_path": str(pdb_path),
@@ -330,7 +636,8 @@ class CachedGraphDataset(Dataset):
                 "created": datetime.now().isoformat(),
                 "num_nodes": int(data.num_nodes),
                 "num_edges": int(data.edge_index.shape[1]),
-                "edge_type_counts": edge_type_counts
+                "edge_type_counts": edge_type_counts,
+                "chain_mapping": chain_mapping
             }
             
             save_graph_to_cache(data, cache_path, metadata)

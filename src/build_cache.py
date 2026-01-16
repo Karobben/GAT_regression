@@ -7,9 +7,13 @@ from pathlib import Path
 import multiprocessing as mp
 from typing import List, Tuple
 from tqdm import tqdm
+import sys
 
-from config import Config
-from data.dataset import CachedGraphDataset
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.config import Config
+from src.data.dataset import CachedGraphDataset
 
 
 def build_cache_worker(args: Tuple[int, str, dict]) -> Tuple[int, bool, str]:
@@ -26,7 +30,7 @@ def build_cache_worker(args: Tuple[int, str, dict]) -> Tuple[int, bool, str]:
     
     try:
         # Reconstruct config from dict (simplified - just what we need)
-        from config import Config
+        from src.config import Config
         config = Config()
         for key, value in config_dict.items():
             if "." in key:
@@ -41,10 +45,13 @@ def build_cache_worker(args: Tuple[int, str, dict]) -> Tuple[int, bool, str]:
             pdb_dir=config.data.pdb_dir,
             default_antibody_chains=config.data.default_antibody_chains,
             default_antigen_chains=config.data.default_antigen_chains,
-            bound_cutoff=config.graph.bound_cutoff,
-            unbound_cutoff=config.graph.unbound_cutoff,
-            use_sequential_edges=config.graph.use_sequential_edges,
+            noncovalent_cutoff=config.graph.noncovalent_cutoff,
+            interface_cutoff=config.graph.interface_cutoff,
+            use_covalent_edges=config.graph.use_covalent_edges,
+            use_noncovalent_edges=config.graph.use_noncovalent_edges,
+            allow_duplicate_edges=config.graph.allow_duplicate_edges,
             include_residue_index=config.graph.include_residue_index,
+            add_interface_features_to_x=config.graph.add_interface_features_to_x,
             graph_cache_dir=config.data.graph_cache_dir,
             hash_pdb_contents=config.data.hash_pdb_contents,
             rebuild_cache=config.data.rebuild_cache,
@@ -80,10 +87,13 @@ def build_cache(
         pdb_dir=config.data.pdb_dir,
         default_antibody_chains=config.data.default_antibody_chains,
         default_antigen_chains=config.data.default_antigen_chains,
-        bound_cutoff=config.graph.bound_cutoff,
-        unbound_cutoff=config.graph.unbound_cutoff,
-        use_sequential_edges=config.graph.use_sequential_edges,
+        noncovalent_cutoff=config.graph.noncovalent_cutoff,
+        interface_cutoff=config.graph.interface_cutoff,
+        use_covalent_edges=config.graph.use_covalent_edges,
+        use_noncovalent_edges=config.graph.use_noncovalent_edges,
+        allow_duplicate_edges=config.graph.allow_duplicate_edges,
         include_residue_index=config.graph.include_residue_index,
+        add_interface_features_to_x=config.graph.add_interface_features_to_x,
         graph_cache_dir=config.data.graph_cache_dir,
         hash_pdb_contents=config.data.hash_pdb_contents,
         rebuild_cache=rebuild,
@@ -103,10 +113,13 @@ def build_cache(
         "data.graph_cache_dir": config.data.graph_cache_dir,
         "data.hash_pdb_contents": config.data.hash_pdb_contents,
         "data.rebuild_cache": rebuild,
-        "graph.bound_cutoff": config.graph.bound_cutoff,
-        "graph.unbound_cutoff": config.graph.unbound_cutoff,
-        "graph.use_sequential_edges": config.graph.use_sequential_edges,
+        "graph.noncovalent_cutoff": config.graph.noncovalent_cutoff,
+        "graph.interface_cutoff": config.graph.interface_cutoff,
+        "graph.use_covalent_edges": config.graph.use_covalent_edges,
+        "graph.use_noncovalent_edges": config.graph.use_noncovalent_edges,
+        "graph.allow_duplicate_edges": config.graph.allow_duplicate_edges,
         "graph.include_residue_index": config.graph.include_residue_index,
+        "graph.add_interface_features_to_x": config.graph.add_interface_features_to_x,
     }
     
     # Prepare arguments for workers
