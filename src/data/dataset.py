@@ -287,30 +287,30 @@ class CachedGraphDataset(Dataset):
     def preload_all(self, verbose: bool = True, num_workers: int = 0):
         """
         Preload all graphs (builds cache if needed).
-        
+
         With disk caching, this will:
         - Load from cache if available
         - Build and save to cache if not available
-        
+
         Args:
             verbose: Whether to print progress
             num_workers: Number of parallel workers (0 = sequential, >0 = multiprocessing, None = auto)
         """
         if verbose:
             print(f"Preloading {len(self)} graphs (will use cache if available)...")
-        
-        # Use multiprocessing if requested
-        if num_workers is None or (num_workers > 0 and len(self) > 1):
-            import multiprocessing as mp
-            if num_workers is None:
-                num_workers = mp.cpu_count()
-            
-            if verbose:
-                print(f"Using {num_workers} workers for parallel processing...")
-            
-            # Prepare worker arguments
-            worker_args = []
-            for idx in range(len(self)):
+
+        # Pre-scan cache to identify which graphs need processing
+        needs_processing = []
+        cached_count = 0
+
+        if not self.rebuild_cache:
+            try:
+                from tqdm import tqdm
+                cache_scan_iter = tqdm(range(len(self)), disable=not verbose, desc="Scanning cache")
+            except ImportError:
+                cache_scan_iter = range(len(self))
+
+            for idx in cache_scan_iter:
                 row = self.df.iloc[idx]
                 pdb_path = Path(row["pdb_path"])
                 if pdb_path.is_absolute():
@@ -324,10 +324,78 @@ class CachedGraphDataset(Dataset):
                         if potential_path.exists():
                             pdb_path = potential_path
                 pdb_path = pdb_path.resolve()
-                
+
                 antibody_chains = self.antibody_chains_list[idx]
                 antigen_chains = self.antigen_chains_list[idx]
-                
+
+                # Create preprocessing config
+                preprocess_config = PreprocessConfig(
+                    pdb_path=str(pdb_path),
+                    antibody_chains=antibody_chains,
+                    antigen_chains=antigen_chains,
+                    noncovalent_cutoff=self.noncovalent_cutoff,
+                    interface_cutoff=self.interface_cutoff,
+                    use_covalent_edges=self.use_covalent_edges,
+                    use_noncovalent_edges=self.use_noncovalent_edges,
+                    allow_duplicate_edges=self.allow_duplicate_edges,
+                    include_residue_index=self.include_residue_index,
+                    add_interface_features_to_x=self.add_interface_features_to_x
+                )
+
+                # Check if cache exists
+                cache_key = make_cache_key(str(pdb_path), preprocess_config, self.hash_pdb_contents)
+                cache_path = get_cache_path(self.cache_dir, cache_key)
+
+                if cache_path.exists():
+                    try:
+                        if verify_cache_metadata(cache_path, preprocess_config):
+                            cached_count += 1
+                            self._cache_hits += 1
+                            continue
+                    except Exception:
+                        pass  # Cache invalid, needs rebuild
+
+                needs_processing.append(idx)
+
+        if verbose:
+            total = len(self)
+            to_process = len(needs_processing)
+            print(f"Cache scan complete: {cached_count}/{total} graphs already cached, {to_process} need processing")
+
+        if not needs_processing:
+            if verbose:
+                print("All graphs are already cached!")
+            return
+
+        # Use multiprocessing if requested and beneficial
+        if num_workers is None or (num_workers > 0 and len(needs_processing) > 1):
+            import multiprocessing as mp
+            if num_workers is None:
+                num_workers = min(mp.cpu_count(), len(needs_processing))  # Don't use more workers than tasks
+
+            if verbose:
+                print(f"Using {num_workers} workers for parallel processing of {len(needs_processing)} graphs...")
+
+            # Prepare worker arguments only for graphs that need processing
+            worker_args = []
+            for idx in needs_processing:
+                row = self.df.iloc[idx]
+                pdb_path = Path(row["pdb_path"])
+                if pdb_path.is_absolute():
+                    pass
+                elif self.pdb_dir:
+                    pdb_path = self.pdb_dir / pdb_path
+                else:
+                    if not pdb_path.exists():
+                        manifest_dir = self.manifest_csv.parent
+                        potential_path = manifest_dir / pdb_path
+                        if potential_path.exists():
+                            pdb_path = potential_path
+                pdb_path = pdb_path.resolve()
+
+                antibody_chains = self.antibody_chains_list[idx]
+                antigen_chains = self.antigen_chains_list[idx]
+
                 worker_args.append((
                     idx,
                     str(pdb_path),
@@ -345,7 +413,7 @@ class CachedGraphDataset(Dataset):
                     self.hash_pdb_contents,
                     self.rebuild_cache
                 ))
-            
+
             # Process in parallel
             try:
                 from tqdm import tqdm
@@ -354,9 +422,9 @@ class CachedGraphDataset(Dataset):
                         pool.imap(_preload_worker, worker_args),
                         total=len(worker_args),
                         disable=not verbose,
-                        desc="Loading graphs"
+                        desc="Building graphs"
                     ))
-                
+
                 # Update cache stats from results
                 for success, was_cache_hit, build_time in results:
                     if was_cache_hit:
@@ -370,23 +438,390 @@ class CachedGraphDataset(Dataset):
                     print(f"Warning: Multiprocessing failed ({e}), falling back to sequential...")
                 # Fall back to sequential
                 num_workers = 0
-        
+
         # Sequential processing
         if num_workers == 0:
             try:
                 from tqdm import tqdm
-                for idx in tqdm(range(len(self)), disable=not verbose, desc="Loading graphs"):
+                for idx in tqdm(needs_processing, disable=not verbose, desc="Building graphs"):
                     _ = self[idx]  # This will use cache or build it
             except ImportError:
                 # tqdm not available, use simple loop
-                for idx in range(len(self)):
+                for idx in needs_processing:
                     if verbose and idx % 10 == 0:
-                        print(f"Loading graph {idx}/{len(self)}...")
+                        print(f"Building graph {idx}/{len(self)}...")
                     _ = self[idx]
-        
+
         if verbose:
             self.print_cache_stats()
-    
+
+    def check_graph_health(self, verbose: bool = True, save_unhealthy_dir: str = None) -> Dict[str, any]:
+        """
+        Check the health of all graphs in the dataset.
+
+        Performs comprehensive health checks including:
+        - Missing required fields
+        - Empty graphs (no nodes/edges)
+        - Interface node issues
+        - Structural problems
+
+        Args:
+            verbose: Whether to print detailed health report
+            save_unhealthy_dir: Directory to save unhealthy graphs lists by issue type
+
+        Returns:
+            Health report dictionary with statistics and issue lists
+        """
+        if verbose:
+            print("\n" + "="*60)
+            print("GRAPH HEALTH CHECK")
+            print("="*60)
+
+        health_report = {
+            "total_graphs": len(self),
+            "healthy_graphs": 0,
+            "issues_found": False,
+            "issues": {
+                "missing_is_interface": [],
+                "missing_chain_role": [],
+                "missing_edge_type": [],
+                "no_nodes": [],
+                "no_edges": [],
+                "no_interface_nodes": [],
+                "few_interface_nodes": [],  # Less than 3 interface nodes
+                "isolated_nodes": [],  # Nodes with no edges
+                "invalid_interface_markers": [],  # Interface markers don't match calculations
+            },
+            "statistics": {
+                "avg_nodes_per_graph": 0.0,
+                "avg_edges_per_graph": 0.0,
+                "avg_interface_nodes_per_graph": 0.0,
+                "interface_node_distribution": [],
+                "edge_type_distribution": {"covalent": 0, "noncovalent": 0}
+            }
+        }
+
+        total_nodes = 0
+        total_edges = 0
+        total_interface_nodes = 0
+
+        try:
+            from tqdm import tqdm
+            iterator = tqdm(range(len(self)), disable=not verbose, desc="Health checking")
+        except ImportError:
+            iterator = range(len(self))
+
+        for idx in iterator:
+            try:
+                # Load the graph
+                data = self[idx]
+
+                # Check required fields
+                if not hasattr(data, 'is_interface') or data.is_interface is None:
+                    health_report["issues"]["missing_is_interface"].append(idx)
+                    continue
+
+                if not hasattr(data, 'chain_role') or data.chain_role is None:
+                    health_report["issues"]["missing_chain_role"].append(idx)
+                    continue
+
+                if not hasattr(data, 'edge_type') or data.edge_type is None:
+                    health_report["issues"]["missing_edge_type"].append(idx)
+                    continue
+
+                # Basic structure checks
+                num_nodes = data.num_nodes
+                num_edges = data.edge_index.shape[1] if data.edge_index is not None else 0
+
+                if num_nodes == 0:
+                    health_report["issues"]["no_nodes"].append(idx)
+                    continue
+
+                if num_edges == 0:
+                    health_report["issues"]["no_edges"].append(idx)
+                    continue
+
+                # Interface node checks
+                interface_mask = (data.is_interface == 1)
+                num_interface_nodes = interface_mask.sum().item()
+
+                if num_interface_nodes == 0:
+                    health_report["issues"]["no_interface_nodes"].append(idx)
+                    continue
+
+                if num_interface_nodes < 3:
+                    health_report["issues"]["few_interface_nodes"].append((idx, num_interface_nodes))
+
+                # Check for isolated nodes (nodes with no edges)
+                row, col = data.edge_index
+                node_degrees = torch.zeros(num_nodes, dtype=torch.int)
+                node_degrees.scatter_add_(0, row, torch.ones_like(row, dtype=torch.int))
+                node_degrees.scatter_add_(0, col, torch.ones_like(col, dtype=torch.int))
+                isolated_count = (node_degrees == 0).sum().item()
+
+                if isolated_count > 0:
+                    health_report["issues"]["isolated_nodes"].append((idx, isolated_count))
+
+                # Validate interface markers (basic sanity check)
+                # For interface nodes, min_inter_dist should be finite and reasonable
+                if hasattr(data, 'min_inter_dist') and data.min_inter_dist is not None:
+                    interface_min_dists = data.min_inter_dist[interface_mask]
+                    invalid_markers = (
+                        torch.isnan(interface_min_dists) |
+                        torch.isinf(interface_min_dists) |
+                        (interface_min_dists <= 0) |
+                        (interface_min_dists > 50)  # Unreasonably large distance
+                    ).sum().item()
+
+                    if invalid_markers > 0:
+                        health_report["issues"]["invalid_interface_markers"].append((idx, invalid_markers))
+
+                # Collect statistics
+                total_nodes += num_nodes
+                total_edges += num_edges
+                total_interface_nodes += num_interface_nodes
+                health_report["statistics"]["interface_node_distribution"].append(num_interface_nodes)
+
+                # Edge type distribution
+                if data.edge_type is not None:
+                    covalent_count = (data.edge_type == 0).sum().item()
+                    noncovalent_count = (data.edge_type == 1).sum().item()
+                    health_report["statistics"]["edge_type_distribution"]["covalent"] += covalent_count
+                    health_report["statistics"]["edge_type_distribution"]["noncovalent"] += noncovalent_count
+
+                # Mark as healthy if we got here
+                health_report["healthy_graphs"] += 1
+
+            except Exception as e:
+                if verbose:
+                    print(f"Error checking graph {idx}: {e}")
+                continue
+
+        # Calculate averages
+        if health_report["healthy_graphs"] > 0:
+            health_report["statistics"]["avg_nodes_per_graph"] = total_nodes / health_report["healthy_graphs"]
+            health_report["statistics"]["avg_edges_per_graph"] = total_edges / health_report["healthy_graphs"]
+            health_report["statistics"]["avg_interface_nodes_per_graph"] = total_interface_nodes / health_report["healthy_graphs"]
+
+        # Check if any issues were found
+        health_report["issues_found"] = any(len(issues) > 0 for issues in health_report["issues"].values())
+
+        # Save unhealthy graphs by issue type if requested
+        if save_unhealthy_dir and health_report["issues_found"]:
+            self._save_unhealthy_graphs_by_type(health_report, save_unhealthy_dir, verbose)
+
+        # Print detailed report
+        if verbose:
+            self._print_health_report(health_report)
+
+        return health_report
+
+    def _print_health_report(self, report: Dict[str, any]):
+        """Print a detailed health report."""
+        print(f"\nDataset Health Summary:")
+        print(f"Total graphs: {report['total_graphs']}")
+        print(f"Healthy graphs: {report['healthy_graphs']} ({report['healthy_graphs']/report['total_graphs']*100:.1f}%)")
+
+        if report["statistics"]["avg_nodes_per_graph"] > 0:
+            print(f"\nAverage statistics per graph:")
+            print(f"  Average nodes per graph: {report['statistics']['avg_nodes_per_graph']:.1f}")
+            print(f"  Average edges per graph: {report['statistics']['avg_edges_per_graph']:.1f}")
+            print(f"  Average interface nodes per graph: {report['statistics']['avg_interface_nodes_per_graph']:.1f}")
+
+        if report["statistics"]["edge_type_distribution"]["covalent"] > 0:
+            total_edges = (report["statistics"]["edge_type_distribution"]["covalent"] +
+                          report["statistics"]["edge_type_distribution"]["noncovalent"])
+            if total_edges > 0:
+                print(f"\nEdge type distribution:")
+                print(f"  Covalent edges: {report['statistics']['edge_type_distribution']['covalent']/total_edges*100:.1f}%")
+                print(f"  Noncovalent edges: {report['statistics']['edge_type_distribution']['noncovalent']/total_edges*100:.1f}%")
+
+        # Report issues
+        issues_found = False
+        for issue_type, issue_list in report["issues"].items():
+            if issue_list:
+                issues_found = True
+                break
+
+        if issues_found:
+            print(f"\n⚠️  ISSUES FOUND:")
+            for issue_type, issue_list in report["issues"].items():
+                if issue_list:
+                    print(f"  • {issue_type.replace('_', ' ').title()}: {len(issue_list)} graphs")
+                    if len(issue_list) <= 5:  # Show details for small lists
+                        for item in issue_list[:5]:
+                            if isinstance(item, tuple):
+                                print(f"    - Graph {item[0]}: {item[1]}")
+                            else:
+                                print(f"    - Graph {item}")
+                    elif len(issue_list) > 5:
+                        print(f"    - First 5: {issue_list[:5]}")
+        else:
+            print(f"\n✅ No issues found - all graphs appear healthy!")
+
+        print("="*60)
+
+    def _save_unhealthy_graphs_by_type(self, health_report: Dict[str, any], save_dir: str, verbose: bool = True):
+        """Save unhealthy graphs to separate files by issue type."""
+        import json
+        from pathlib import Path
+        from datetime import datetime
+
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create summary file
+        summary_file = save_dir / "health_check_summary.json"
+        summary_data = {
+            "health_check_summary": {
+                "total_graphs": health_report["total_graphs"],
+                "healthy_graphs": health_report["healthy_graphs"],
+                "unhealthy_graphs": health_report["total_graphs"] - health_report["healthy_graphs"],
+                "issues_found": health_report["issues_found"],
+                "issues_breakdown": {k: len(v) for k, v in health_report["issues"].items()},
+                "statistics": health_report["statistics"],
+                "generated_at": datetime.now().isoformat(),
+                "output_directory": str(save_dir)
+            }
+        }
+
+        with open(summary_file, 'w', encoding='utf-8') as f:
+            json.dump(summary_data, f, indent=2, ensure_ascii=False)
+
+        # Save each issue type to separate file
+        saved_files = []
+        for issue_type, issue_list in health_report["issues"].items():
+            if not issue_list:
+                continue
+
+            # Collect detailed information for graphs with this issue
+            unhealthy_graphs = {}
+
+            # Get unique graph indices for this issue
+            graph_indices = set()
+            for item in issue_list:
+                if isinstance(item, (list, tuple)) and len(item) >= 1:
+                    graph_indices.add(item[0])
+                elif isinstance(item, int):
+                    graph_indices.add(item)
+
+            # Collect details for each unhealthy graph
+            for idx in sorted(graph_indices):
+                try:
+                    # Get graph data
+                    data = self[idx]
+
+                    # Get manifest information
+                    row = self.df.iloc[idx]
+                    pdb_path = row["pdb_path"]
+                    y_value = row["y"]
+                    antibody_chains = self.antibody_chains_list[idx] if idx < len(self.antibody_chains_list) else []
+                    antigen_chains = self.antigen_chains_list[idx] if idx < len(self.antigen_chains_list) else []
+
+                    # Collect all issues for this graph (not just the current issue type)
+                    all_issues = {}
+                    for check_issue_type, check_issue_list in health_report["issues"].items():
+                        for item in check_issue_list:
+                            if isinstance(item, (list, tuple)) and len(item) >= 1 and item[0] == idx:
+                                if check_issue_type not in all_issues:
+                                    all_issues[check_issue_type] = []
+                                if len(item) > 1:
+                                    all_issues[check_issue_type].append(item[1])
+                                else:
+                                    all_issues[check_issue_type] = True
+                            elif isinstance(item, int) and item == idx:
+                                all_issues[check_issue_type] = True
+
+                    # Collect graph statistics
+                    graph_stats = {
+                        "num_nodes": data.num_nodes,
+                        "num_edges": data.edge_index.shape[1] if data.edge_index is not None else 0,
+                        "has_is_interface": hasattr(data, 'is_interface') and data.is_interface is not None,
+                        "has_chain_role": hasattr(data, 'chain_role') and data.chain_role is not None,
+                        "has_edge_type": hasattr(data, 'edge_type') and data.edge_type is not None,
+                        "has_min_inter_dist": hasattr(data, 'min_inter_dist') and data.min_inter_dist is not None,
+                        "has_inter_contact_count": hasattr(data, 'inter_contact_count') and data.inter_contact_count is not None,
+                    }
+
+                    # Calculate interface statistics if available
+                    if hasattr(data, 'is_interface') and data.is_interface is not None:
+                        interface_mask = (data.is_interface == 1)
+                        graph_stats["num_interface_nodes"] = interface_mask.sum().item()
+                        graph_stats["interface_percentage"] = interface_mask.float().mean().item()
+
+                        if hasattr(data, 'min_inter_dist') and data.min_inter_dist is not None:
+                            interface_dists = data.min_inter_dist[interface_mask]
+                            if len(interface_dists) > 0:
+                                graph_stats["min_interface_dist"] = interface_dists.min().item()
+                                graph_stats["max_interface_dist"] = interface_dists.max().item()
+                                graph_stats["mean_interface_dist"] = interface_dists.mean().item()
+
+                    # Edge type distribution
+                    if hasattr(data, 'edge_type') and data.edge_type is not None:
+                        edge_types = data.edge_type.unique().tolist()
+                        edge_type_counts = {}
+                        for et in edge_types:
+                            count = (data.edge_type == et).sum().item()
+                            edge_type_counts[f"type_{int(et)}"] = count
+                        graph_stats["edge_type_counts"] = edge_type_counts
+
+                    # Store unhealthy graph information
+                    unhealthy_graphs[str(idx)] = {
+                        "index": idx,
+                        "pdb_path": pdb_path,
+                        "y_value": y_value,
+                        "antibody_chains": antibody_chains,
+                        "antigen_chains": antigen_chains,
+                        "all_issues": all_issues,
+                        "statistics": graph_stats
+                    }
+
+                except Exception as e:
+                    # If we can't load the graph, just record the error
+                    unhealthy_graphs[str(idx)] = {
+                        "index": idx,
+                        "error": f"Could not load graph: {str(e)}",
+                        "all_issues": {issue_type: True}
+                    }
+
+            # Save to issue-specific file
+            if unhealthy_graphs:
+                issue_file = save_dir / f"{issue_type}.json"
+                with open(issue_file, 'w', encoding='utf-8') as f:
+                    json.dump({
+                        "issue_type": issue_type,
+                        "description": self._get_issue_description(issue_type),
+                        "num_affected_graphs": len(unhealthy_graphs),
+                        "generated_at": datetime.now().isoformat(),
+                        "unhealthy_graphs": unhealthy_graphs
+                    }, f, indent=2, ensure_ascii=False)
+                saved_files.append(str(issue_file))
+
+        if verbose and saved_files:
+            print(f"\n💾 Saved unhealthy graphs to separate files in: {save_dir}")
+            print(f"   Files created: {len(saved_files)}")
+            for file_path in saved_files[:5]:  # Show first 5
+                file_name = Path(file_path).name
+                print(f"   • {file_name}")
+            if len(saved_files) > 5:
+                print(f"   ... and {len(saved_files) - 5} more")
+            print(f"   📊 Summary: {summary_file}")
+
+    def _get_issue_description(self, issue_type: str) -> str:
+        """Get human-readable description for an issue type."""
+        descriptions = {
+            "missing_is_interface": "Graphs missing the is_interface field (required for interface identification)",
+            "missing_chain_role": "Graphs missing the chain_role field (required for antibody/antigen distinction)",
+            "missing_edge_type": "Graphs missing the edge_type field (required for edge type information)",
+            "no_nodes": "Graphs with zero nodes (empty graphs)",
+            "no_edges": "Graphs with zero edges (no connectivity)",
+            "no_interface_nodes": "Graphs with no interface nodes (no antibody-antigen contacts)",
+            "few_interface_nodes": "Graphs with very few interface nodes (< 3, may indicate weak binding)",
+            "isolated_nodes": "Graphs containing nodes with no edges (disconnected components)",
+            "invalid_interface_markers": "Graphs with invalid interface distance markers (NaN, inf, or unreasonable values)"
+        }
+        return descriptions.get(issue_type, f"Unknown issue type: {issue_type}")
+
     def get_cache_stats(self) -> Dict[str, float]:
         """Get cache statistics."""
         total = self._cache_hits + self._cache_misses

@@ -287,6 +287,29 @@ def evaluate_model(
         # Use multiprocessing if available
         num_workers = getattr(config.training, 'preload_workers', None)  # Default: auto-detect
         dataset.preload_all(verbose=True, num_workers=num_workers)
+
+        # Check graph health after loading (unless skipped)
+        if not args.skip_health_check:
+            print("\nChecking graph health...")
+            health_report = dataset.check_graph_health(verbose=True, save_unhealthy_dir=args.save_unhealthy_dir)
+
+            # Warn about issues but don't abort evaluation
+            if health_report["issues_found"]:
+                serious_issues = [
+                    "no_nodes", "no_edges", "no_interface_nodes",
+                    "missing_is_interface", "missing_chain_role", "missing_edge_type"
+                ]
+                serious_count = sum(len(health_report["issues"][issue]) for issue in serious_issues)
+
+                if serious_count > 0:
+                    print(f"\n⚠️  WARNING: Found {serious_count} graphs with serious issues!")
+                    print("These graphs may affect evaluation results.")
+
+                if args.save_unhealthy_dir:
+                    print(f"  - Review unhealthy graphs lists: {args.save_unhealthy_dir}")
+        else:
+            print("\nSkipping graph health check (--skip-health-check)")
+            health_report = None
         
     except Exception as e:
         print(f"Error loading dataset: {e}")
@@ -519,6 +542,10 @@ def main():
     parser.add_argument("--rebuild-cache", action="store_true",
                        help="Ignore existing cache and rebuild all graphs")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--skip-health-check", action="store_true",
+                       help="Skip graph health check after loading (faster but less safe)")
+    parser.add_argument("--save-unhealthy-dir", type=str, default=None,
+                       help="Directory to save unhealthy graphs lists by issue type")
     args = parser.parse_args()
     
     '''

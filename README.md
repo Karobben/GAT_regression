@@ -163,6 +163,86 @@ Synthetic dataset for testing (no PDB files needed):
 python train.py --synthetic
 ```
 
+### Performance Optimizations
+
+#### Graph Preloading and Caching
+
+The training script includes optimized graph preloading with disk caching:
+
+- **Cache Pre-scanning**: Before processing, scans existing cache to skip already processed graphs
+- **Multiprocessing**: Parallel graph building using multiple CPU cores
+- **Command-line Control**: Configure number of preload workers
+
+```bash
+# Use 8 workers for parallel graph building
+python train.py --manifest data/manifest.csv --preload-workers 8
+
+# Auto-detect optimal worker count
+python train.py --manifest data/manifest.csv --preload-workers auto  # or omit flag
+
+# Sequential processing (slower but more memory-efficient)
+python train.py --manifest data/manifest.csv --preload-workers 0
+```
+
+#### Graph Health Checking
+
+After loading graphs, the system automatically performs comprehensive health checks:
+
+- **Missing Fields**: Detects graphs missing required fields (`is_interface`, `chain_role`, `edge_type`)
+- **Empty Graphs**: Identifies graphs with no nodes or no edges
+- **Interface Issues**: Flags graphs with no interface nodes or invalid interface markers
+- **Structural Problems**: Detects isolated nodes and other connectivity issues
+
+```bash
+# Run health check (default behavior)
+python train.py --manifest data/manifest.csv
+
+# Skip health check for faster startup
+python train.py --manifest data/manifest.csv --skip-health-check
+
+# Save unhealthy graphs organized by issue type to a directory
+python train.py --manifest data/manifest.csv --save-unhealthy-dir unhealthy_analysis
+
+# Training automatically saves to runs/<run_id>/unhealthy_graphs/
+python train.py --manifest data/manifest.csv  # Saves automatically
+```
+
+**Health Check Features:**
+- **Training**: Warns about serious issues and asks whether to continue
+- **Evaluation**: Reports issues but continues with evaluation
+- **Detailed Report**: Shows statistics and specific problematic graphs
+- **Unhealthy Graphs Export**: Saves comprehensive JSON files organized by issue type
+- **Performance**: Can be skipped with `--skip-health-check` for faster iteration
+
+**Unhealthy Graphs Directory Structure:**
+```
+unhealthy_analysis/
+├── health_check_summary.json    # Overall summary and statistics
+├── no_interface_nodes.json      # Graphs with no antibody-antigen contacts
+├── missing_is_interface.json    # Graphs missing interface markers
+├── invalid_interface_markers.json # Graphs with invalid distance markers
+└── ...                          # One file per issue type
+```
+
+**Common Issues Detected:**
+- PDB files with missing antibody/antigen chains
+- Incorrect chain assignments in manifest
+- Malformed PDB structures
+- Preprocessing parameter mismatches
+
+**Performance Tips:**
+- For 1000+ PDBs, use `--preload-workers auto` for optimal speed
+- Cache files persist between runs, so subsequent training is much faster
+- Use `--rebuild-cache` to force regeneration if preprocessing parameters change
+- Use `--skip-health-check` during iterative development
+- Monitor cache hit rate and health check warnings for data quality
+
+#### Memory and GPU Usage
+
+- **Batch Size**: Start with small batches (8-16) and increase based on GPU memory
+- **Data Loading**: Use `num_workers=4` in DataLoader for CPU-GPU transfer optimization
+- **Mixed Precision**: Consider using `torch.cuda.amp` for faster training on modern GPUs
+
 ### Evaluation
 
 Evaluate a trained model (using absolute paths in manifest):

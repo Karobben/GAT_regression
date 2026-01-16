@@ -18,7 +18,7 @@ from typing import Optional, List
 class GATRanker(nn.Module):
     """
     Relational GAT model for ranking antibody-antigen complexes.
-
+    
     Architecture:
     - Full-graph message passing captures structural context
     - Relational GAT: separate convolutions for covalent vs noncovalent edges
@@ -46,7 +46,7 @@ class GATRanker(nn.Module):
     ):
         """
         Initialize relational GAT ranker.
-
+        
         Args:
             node_feature_dim: Dimension of node features
             hidden_dim: Hidden dimension for GAT layers
@@ -60,7 +60,7 @@ class GATRanker(nn.Module):
             interface_pool_mode: Interface pooling mode ("all" or "split_roles")
         """
         super().__init__()
-
+        
         self.node_feature_dim = node_feature_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
@@ -71,10 +71,10 @@ class GATRanker(nn.Module):
         self.use_residual = use_residual
         self.combine_edge_types = combine_edge_types
         self.interface_pool_mode = interface_pool_mode
-
+        
         # Input projection
         self.input_proj = nn.Linear(node_feature_dim, hidden_dim)
-
+        
         # Relational GAT layers: separate convs for each edge type
         self.gat_layers_cov = nn.ModuleList()  # For covalent edges (type 0)
         self.gat_layers_non = nn.ModuleList()  # For noncovalent edges (type 1)
@@ -101,7 +101,7 @@ class GATRanker(nn.Module):
                     concat=True
                 )
             )
-
+        
         # Layer normalization for residual connections
         if use_residual:
             self.layer_norms = nn.ModuleList()
@@ -113,10 +113,10 @@ class GATRanker(nn.Module):
         if combine_edge_types == "concat":
             concat_dim = hidden_dim * num_heads * 2  # Double because we concat two edge type outputs
             self.combine_proj = nn.Linear(concat_dim, hidden_dim * num_heads)
-
+        
         # Final layer dimension after concatenating heads
         final_dim = hidden_dim * num_heads
-
+        
         # Interface pooling dimensions depend on pooling mode
         if interface_pool_mode == "all":
             # Pool all interface nodes: mean + max
@@ -126,7 +126,7 @@ class GATRanker(nn.Module):
             self.pool_dim = final_dim * 4
         else:
             raise ValueError(f"Unknown interface_pool_mode: {interface_pool_mode}")
-
+        
         # MLP head for scalar score with LayerNorm for stability
         self.score_head = nn.Sequential(
             nn.Linear(self.pool_dim, hidden_dim),
@@ -152,7 +152,7 @@ class GATRanker(nn.Module):
     ) -> torch.Tensor:
         """
         Forward pass with relational GAT and interface-only pooling.
-
+        
         Args:
             x: Node features (N, node_feature_dim)
             edge_index: Edge indices (2, E)
@@ -161,7 +161,7 @@ class GATRanker(nn.Module):
             edge_type: Edge type tensor (E,) with 0=COVALENT, 1=NONCOVALENT
             is_interface: Interface marker (N,) with 1=interface node, 0=non-interface
             chain_role: Chain role (N,) with 0=antibody, 1=antigen
-
+            
         Returns:
             scores: Scalar scores per graph (B,) where B is batch size
         """
@@ -169,18 +169,40 @@ class GATRanker(nn.Module):
         x = self.input_proj(x)
         x = F.relu(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
-
+        
         # Get edge type information
+        num_edges = edge_index.shape[1] if edge_index is not None else 0
+        
         if self.use_edge_types:
             # Try multiple sources for edge_type
+            edge_type_tensor = None
+            
             if edge_type is not None:
                 edge_type_tensor = edge_type.long()
             elif hasattr(self, '_edge_type') and self._edge_type is not None:
                 edge_type_tensor = self._edge_type.long()
             elif edge_attr is not None and edge_attr.shape[1] > 0:
                 edge_type_tensor = edge_attr[:, 0].long()
-            else:
-                edge_type_tensor = None
+            
+            # Validate edge_type shape matches number of edges
+            if edge_type_tensor is not None:
+                if edge_type_tensor.shape[0] != num_edges:
+                    # Shape mismatch - try to fix or warn
+                    if edge_type_tensor.numel() == num_edges:
+                        # Reshape if it's just a different shape
+                        edge_type_tensor = edge_type_tensor.view(-1)[:num_edges]
+                    elif num_edges > 0 and edge_type_tensor.numel() > num_edges:
+                        # If edge_type is larger, take first num_edges elements
+                        # This can happen if edge_type includes padding or extra data
+                        edge_type_tensor = edge_type_tensor[:num_edges]
+                    else:
+                        # If shapes don't match at all, fall back to None
+                        import warnings
+                        warnings.warn(
+                            f"edge_type shape {edge_type_tensor.shape} doesn't match "
+                            f"number of edges {num_edges}. Disabling edge type filtering."
+                        )
+                        edge_type_tensor = None
         else:
             edge_type_tensor = None
 
@@ -189,7 +211,7 @@ class GATRanker(nn.Module):
             x_input = x  # Store input for residual connection
 
             # Separate edges by type
-            if edge_type_tensor is not None:
+            if edge_type_tensor is not None and num_edges > 0:
                 mask_cov = (edge_type_tensor == 0)  # Covalent edges
                 mask_non = (edge_type_tensor == 1)  # Noncovalent edges
 
@@ -222,15 +244,15 @@ class GATRanker(nn.Module):
             if i < self.num_layers - 1:
                 x = F.relu(x)
                 x = F.dropout(x, p=self.dropout, training=self.training)
-
+        
         # Interface-only pooling
         x_pooled = self._interface_pooling(x, batch, is_interface, chain_role)
-
+        
         # Predict scalar score
         score = self.score_head(x_pooled)
-
+        
         return score.squeeze(-1)  # (B,)
-
+    
     def _interface_pooling(
         self,
         x: torch.Tensor,

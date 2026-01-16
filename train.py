@@ -539,6 +539,12 @@ def main():
                        help="Directory to save run artifacts (default: runs)")
     parser.add_argument("--run-id", type=str, default=None,
                        help="Run ID (default: auto-generated timestamp)")
+    parser.add_argument("--preload-workers", type=int, default=None,
+                       help="Number of workers for parallel graph preloading (default: auto, 0=sequential)")
+    parser.add_argument("--skip-health-check", action="store_true",
+                       help="Skip graph health check after loading (faster but less safe)")
+    parser.add_argument("--save-unhealthy-dir", type=str, default=None,
+                       help="Directory to save unhealthy graphs lists by issue type (default: runs/<run_id>/unhealthy_graphs/)")
     args = parser.parse_args()
     
     '''For Debugging
@@ -577,6 +583,10 @@ def main():
     if args.save_all_epochs:
         config.training.save_all_epochs = True
         print("Will save model checkpoint at the end of each epoch")
+    if args.preload_workers is not None:
+        config.training.preload_workers = args.preload_workers
+        worker_desc = f"{args.preload_workers} workers" if args.preload_workers > 0 else "sequential"
+        print(f"Overriding preload_workers to {worker_desc}")
 
     # Setup device
     device = get_device(config.training.device)
@@ -628,7 +638,49 @@ def main():
         
         # Preload all graphs into cache to avoid slow loading during training
         print("Preloading graphs into cache (this may take a while for the first time)...")
-        dataset.preload_all(verbose=True)
+        preload_workers = getattr(config.training, 'preload_workers', None)
+        dataset.preload_all(verbose=True, num_workers=preload_workers)
+
+        # Check graph health after loading (unless skipped)
+        if not args.skip_health_check:
+            print("\nChecking graph health...")
+
+            # Determine save directory for unhealthy graphs
+            save_unhealthy_dir = None
+            if args.save_unhealthy_dir:
+                save_unhealthy_dir = args.save_unhealthy_dir
+            elif run_dir:  # Use run directory if available
+                save_unhealthy_dir = run_dir / "unhealthy_graphs"
+
+            health_report = dataset.check_graph_health(verbose=True, save_unhealthy_dir=save_unhealthy_dir)
+
+            # Warn if there are serious issues
+            if health_report["issues_found"]:
+                serious_issues = [
+                    "no_nodes", "no_edges", "no_interface_nodes",
+                    "missing_is_interface", "missing_chain_role", "missing_edge_type"
+                ]
+                serious_count = sum(len(health_report["issues"][issue]) for issue in serious_issues)
+
+                if serious_count > 0:
+                    print(f"\n⚠️  WARNING: Found {serious_count} graphs with serious issues!")
+                    print("These graphs may cause training problems. Consider:")
+                    print("  - Checking your PDB files for missing chains")
+                    print("  - Verifying antibody/antigen chain assignments")
+                    print("  - Using --rebuild-cache to regenerate problematic graphs")
+                    print("  - Filtering out problematic samples from your manifest")
+
+                    if save_unhealthy_dir:
+                        print(f"  - Review unhealthy graphs lists: {save_unhealthy_dir}")
+
+                    # Ask user if they want to continue
+                    response = input("\nContinue training anyway? (y/N): ").strip().lower()
+                    if response not in ['y', 'yes']:
+                        print("Training aborted.")
+                        return
+        else:
+            print("\nSkipping graph health check (--skip-health-check)")
+            health_report = None
         
     except Exception as e:
         print(f"Error loading dataset: {e}")

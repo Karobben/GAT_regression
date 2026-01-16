@@ -38,7 +38,7 @@ class ModelConfig:
     use_residual: bool = True  # Use residual connections
     combine_edge_types: str = "sum"  # "sum" or "concat" for combining edge type messages
     interface_pool_mode: str = "all"  # "all" (pool all interface nodes) or "split_roles" (separate antibody/antigen interface pooling)
-
+    
     # Input feature dimensions (will be set automatically)
     node_feature_dim: int = 24  # 21 AA types + 1 chain type + 1 optional residue index + 2 optional interface features
 

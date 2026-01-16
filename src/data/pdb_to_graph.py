@@ -248,7 +248,7 @@ def build_edges(
                 edge_types_list.append(edge_type)
                 edge_dists_list.append(dist)
                 edge_dists_list.append(dist)
-                
+    
                 # Track covalent pairs
                 covalent_pairs.add((min(i, j), max(i, j)))
     
@@ -268,10 +268,10 @@ def build_edges(
                     edge_type = 1  # NONCOVALENT
                     edge_attrs.append([dist / max_dist])
                     edge_attrs.append([dist / max_dist])
-                    edge_types_list.append(edge_type)
-                    edge_types_list.append(edge_type)
-                    edge_dists_list.append(dist)
-                    edge_dists_list.append(dist)
+                edge_types_list.append(edge_type)
+                edge_types_list.append(edge_type)
+                edge_dists_list.append(dist)
+                edge_dists_list.append(dist)
     
     if len(edges) == 0:
         warnings.warn("No edges found in graph!")
@@ -434,7 +434,7 @@ def pdb_to_graph(
 
     parser = PDBParser(QUIET=True)
     structure = parser.get_structure("complex", str(pdb_path))
-
+    
     # #region agent log
     log_debug("pdb_to_graph.py:pdb_to_graph", "PDB parsing completed", {
         "pdb_path": str(pdb_path),
@@ -478,10 +478,10 @@ def pdb_to_graph(
         "available_chains": available_chains
     }, "B")
     # #endregion agent log
-
+    
     # Extract C-alpha coordinates
     coords, residue_info, residue_types = extract_ca_coordinates(structure, all_chains)
-
+    
     # #region agent log
     log_debug("pdb_to_graph.py:pdb_to_graph", "Coordinate extraction completed", {
         "num_coords": len(coords),
