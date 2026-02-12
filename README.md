@@ -2,6 +2,20 @@
 
 A PyTorch Geometric-based Graph Neural Network (GNN) model for ranking antibody-antigen complexes by binding affinity. The model uses a **pairwise ranking loss** to learn relative ordering within batches, rather than predicting absolute binding values.
 
+## 🚀 Quick Start
+
+**Want to run with your PDB files?** → See **[HOW_TO_RUN_WITH_PDB.md](HOW_TO_RUN_WITH_PDB.md)** for step-by-step instructions!
+
+```bash
+# Quick test (no PDB files needed)
+cd src && python train.py --synthetic --epoch 10
+
+# Or run complete example
+./run_example.sh
+```
+
+For quick reference, see [QUICK_REFERENCE.txt](QUICK_REFERENCE.txt)
+
 ## Overview
 
 This project implements a Graph Attention Network (GAT) that:

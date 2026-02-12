@@ -1,0 +1,148 @@
+╔══════════════════════════════════════════════════════════════════════════╗
+║                  HOW TO RUN WITH PDB FILES - Quick Reference              ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+📖 FULL GUIDE: See HOW_TO_RUN_WITH_PDB.md for complete instructions
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 🚀 QUICKEST START (No PDB files needed)                                  │
+└──────────────────────────────────────────────────────────────────────────┘
+
+   cd src
+   python train.py --synthetic --epoch 10
+
+   ✓ Tests the system end-to-end with synthetic data
+
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 📝 WITH YOUR PDB FILES (3 steps)                                         │
+└──────────────────────────────────────────────────────────────────────────┘
+
+   1️⃣  Create manifest CSV:
+   
+       pdb_path,y,antibody_chains,antigen_chains
+       /path/to/complex1.pdb,8.5,"H,L",A
+       /path/to/complex2.pdb,7.2,"H,L",B
+
+   2️⃣  Train model:
+   
+       cd src
+       python train.py --manifest ../manifest.csv --epoch 100
+
+   3️⃣  Evaluate model:
+   
+       python eval.py --model checkpoints/best_model.pt --manifest ../test.csv
+
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 🧪 TESTING & DEMOS                                                       │
+└──────────────────────────────────────────────────────────────────────────┘
+
+   Test PDB loading:       python test_pdb_loading.py
+   See demonstration:      python demo_pdb_loading.py
+   Run complete example:   ./run_example.sh
+
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ⚙️  TRAINING OPTIONS                                                     │
+└──────────────────────────────────────────────────────────────────────────┘
+
+   Basic:
+   python train.py --manifest manifest.csv --epoch 100
+   python train.py --manifest manifest.csv --loss mse
+   python train.py --manifest manifest.csv --seed 42
+
+   Advanced:
+   python train.py --config my_config.yaml --manifest manifest.csv
+   python train.py --manifest manifest.csv --overfit-n 32
+   python train.py --manifest manifest.csv --rebuild-cache
+
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 📊 MANIFEST CSV FORMAT                                                   │
+└──────────────────────────────────────────────────────────────────────────┘
+
+   Required columns:
+   - pdb_path:         Full path to PDB file (use absolute paths!)
+   - y:                Target value (e.g., binding affinity)
+   - antibody_chains:  Chain IDs like "H,L" or "H:L" (quoted!)
+   - antigen_chains:   Chain IDs like "A" or "A,B"
+
+   ⚠️  IMPORTANT: Quote multi-chain values: "H,L" not H,L
+
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 🔧 COMMON ISSUES                                                         │
+└──────────────────────────────────────────────────────────────────────────┘
+
+   "PDB file not found"
+   → Use absolute paths in manifest
+   → Or use --pdb-dir option
+
+   "Chain X not found"
+   → Check chain IDs: grep "^ATOM" file.pdb | awk '{print $5}' | sort -u
+   → Update manifest with correct chains
+
+   "No C-alpha atoms found"
+   → Check for CA atoms: grep "CA" file.pdb | head
+   → Ensure standard PDB format
+
+   CSV parsing errors
+   → Quote multi-chain values: "H,L" not H,L
+
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 📚 DOCUMENTATION FILES                                                   │
+└──────────────────────────────────────────────────────────────────────────┘
+
+   HOW_TO_RUN_WITH_PDB.md  → Step-by-step running guide (this guide!)
+   QUICKSTART_PDB.md       → Quick reference for PDB loading
+   PDB_LOADING_GUIDE.md    → Complete documentation
+   README.md               → Project overview
+   
+   demo_pdb_loading.py     → Interactive demonstration
+   test_pdb_loading.py     → Test suite
+   run_example.sh          → Complete example script
+
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 💡 EXAMPLES                                                              │
+└──────────────────────────────────────────────────────────────────────────┘
+
+   # Test everything works
+   python test_pdb_loading.py
+
+   # Quick training test
+   cd src && python train.py --synthetic --epoch 5
+
+   # Train with your data
+   cd src && python train.py --manifest ../my_data.csv --epoch 100
+
+   # Evaluate model
+   cd src && python eval.py --model checkpoints/best_model.pt --manifest ../test.csv
+
+   # Debug mode
+   cd src && python train.py --manifest ../data.csv --overfit-n 32
+
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ✅ SUCCESS INDICATORS                                                    │
+└──────────────────────────────────────────────────────────────────────────┘
+
+   Training output:
+   ✓ "Loading manifest: ..."
+   ✓ "Found N samples"
+   ✓ "Loading graphs: 100%"
+   ✓ "Epoch X/Y - Loss: ..., Val Spearman: ..."
+   ✓ "Best model saved to: checkpoints/best_model.pt"
+
+   Files created:
+   ✓ checkpoints/best_model.pt    (trained model)
+   ✓ checkpoints/history.json     (training history)
+   ✓ src/cache/                   (cached graphs)
+
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║  Need help? Run: python demo_pdb_loading.py                              ║
+║  Full guide: HOW_TO_RUN_WITH_PDB.md                                      ║
+╚══════════════════════════════════════════════════════════════════════════╝
